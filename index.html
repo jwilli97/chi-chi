@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GoResyBot - Welcome</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f7f7f7;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .restaurants-section {
+            margin-bottom: 30px;
+        }
+        .restaurant-item {
+            padding: 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background-color: #fafafa;
+        }
+        .restaurant-item:hover {
+            background-color: #f0f0f0;
+            border-color: #ff5a5f;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        .restaurant-item h3 {
+            margin: 0 0 10px 0;
+            color: #333333;
+            font-size: 20px;
+        }
+        .restaurant-item p {
+            margin: 5px 0;
+            color: #666666;
+            font-size: 14px;
+        }
+        .restaurant-item .venue-id {
+            font-family: 'Courier New', monospace;
+            background-color: #e9f5ff;
+            padding: 5px 10px;
+            border-radius: 4px;
+            display: inline-block;
+            margin-top: 10px;
+        }
+        .error {
+            color: #ff5a5f;
+            padding: 10px;
+            background-color: #ffe5e6;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .success {
+            color: #28a745;
+            padding: 10px;
+            background-color: #d4edda;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>{{.Message}}</h1>
+        
+        <div class="restaurants-section">
+            <div id="error" class="error"></div>
+            <div id="success" class="success"></div>
+            
+            <div class="restaurant-item" onclick="selectRestaurant(89607, 'Crevette')">
+                <h3>Crevette</h3>
+                <p><strong>Venue ID:</strong> <span class="venue-id">89607</span></p>
+                <p><em>Click to select this restaurant</em></p>
+            </div>
+            
+            <div class="restaurant-item" onclick="selectRestaurant(89678, 'Farzi NewYork')">
+                <h3>Farzi NewYork</h3>
+                <p><strong>Venue ID:</strong> <span class="venue-id">89678</span></p>
+                <p><em>Click to select this restaurant</em></p>
+            </div>
+            
+            <div class="restaurant-item" onclick="selectRestaurant(92807, 'Nonna Dora\'s Tribeca')">
+                <h3>Nonna Dora's Tribeca</h3>
+                <p><strong>Venue ID:</strong> <span class="venue-id">92807</span></p>
+                <p><em>Click to select this restaurant</em></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function selectRestaurant(venueId, restaurantName) {
+            const errorDiv = document.getElementById('error');
+            const successDiv = document.getElementById('success');
+            
+            errorDiv.style.display = 'none';
+            successDiv.style.display = 'none';
+            
+            fetch('/api/select-venue', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    venue_id: venueId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    errorDiv.textContent = data.error;
+                    errorDiv.style.display = 'block';
+                } else {
+                    successDiv.textContent = `Selected ${restaurantName}! Redirecting to login...`;
+                    successDiv.style.display = 'block';
+                    setTimeout(() => {
+                        window.location.href = '/login';
+                    }, 1000);
+                }
+            })
+            .catch(error => {
+                errorDiv.textContent = 'An error occurred: ' + error.message;
+                errorDiv.style.display = 'block';
+            });
+        }
+    </script>
+</body>
+</html>

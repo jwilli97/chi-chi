@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Reservation Scheduler - Resy</title>
+    <style>
+        /* General body styling */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f7f7f7;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        /* Container for the form */
+        .scheduler-container {
+            background-color: #ffffff;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 500px;
+            text-align: center;
+        }
+
+        /* Title styling */
+        .scheduler-container h1 {
+            font-size: 24px;
+            color: #333333;
+            margin-bottom: 20px;
+        }
+
+        /* Input field styling */
+        .scheduler-container input[type="text"],
+        .scheduler-container input[type="date"] {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 20px;
+            border: 1px solid #cccccc;
+            border-radius: 4px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+
+        /* Submit button styling */
+        .scheduler-container input[type="submit"] {
+            width: 100%;
+            padding: 12px;
+            background-color: #ff5a5f;
+            color: #ffffff;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        .scheduler-container input[type="submit"]:hover {
+            background-color: #e04a50;
+        }
+
+        /* Logout button styling */
+        .scheduler-container .logout-button {
+            width: 100%;
+            padding: 12px;
+            background-color: #6c757d;
+            color: #ffffff;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            margin-top: 10px;
+        }
+
+        .scheduler-container .logout-button:hover {
+            background-color: #5a6268;
+        }
+
+        /* Rotate IP button styling */
+        .scheduler-container .rotate-ip-button {
+            width: 100%;
+            padding: 12px;
+            background-color: #007bff;
+            color: #ffffff;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            margin-top: 10px;
+        }
+
+        .scheduler-container .rotate-ip-button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+
+        .scheduler-container .rotate-ip-button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+
+        /* Label styling */
+        .scheduler-container label {
+            display: block;
+            text-align: left;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #555555;
+        }
+    </style>
+</head>
+<body>
+    <div class="scheduler-container">
+        <h1>Enter Reservation Details</h1>
+        <form action="/schedule" method="post">
+            <!-- Reservation Date -->
+            <label for="reservation_date">Reservation Date:</label>
+            <input type="date" id="reservation_date" name="reservation_date" required>
+
+            <!-- Scheduled Time -->
+            <label for="scheduled_time">Scheduled Time (HH:MM):</label>
+            <input type="text" id="scheduled_time" name="scheduled_time" placeholder="Enter time in HH:MM format" required>
+
+            <!-- Submit Button -->
+            <input type="submit" value="Schedule">
+        </form>
+
+        <!-- Logout Button -->
+        <form action="/logout" method="get">
+            <input type="submit" value="Logout" class="logout-button">
+        </form>
+
+        <!-- Rotate IP Button -->
+        <button id="rotate-ip-button" class="rotate-ip-button" onclick="rotateIP()">Refresh IP</button>
+    </div>
+
+    <script>
+        // Function to handle the IP rotation
+        function rotateIP() {
+            // Disable the button and start the countdown
+            const button = document.getElementById('rotate-ip-button');
+            button.disabled = true;
+
+            let countdown = 10;
+            button.textContent = `Refreshing in ${countdown} seconds...`;
+
+            // Start the countdown timer
+            const countdownInterval = setInterval(() => {
+                countdown--;
+                button.textContent = `Refreshing in ${countdown} seconds...`;
+
+                // When countdown reaches 0, re-enable the button
+                if (countdown <= 0) {
+                    clearInterval(countdownInterval);
+                    button.textContent = 'Refresh IP';
+                    button.disabled = false;
+                }
+            }, 1000);
+
+            // Send a request to the server to rotate the IP
+            fetch('/rotate-ip', {
+                method: 'POST',
+            })
+            .then(response => {
+                if (response.ok) {
+                    return response.text();
+                } else {
+                    throw new Error('Failed to rotate IP');
+                }
+            })
+            .then(message => {
+                console.log(message); // Log the success message
+            })
+            .catch(error => {
+                console.error('Error:', error); // Log any errors
+            });
+        }
+    </script>
+</body>
+</html>
