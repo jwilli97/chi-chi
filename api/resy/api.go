@@ -6,16 +6,19 @@ package resy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/21Bruce/resolved-server/api"
-	"github.com/21Bruce/resolved-server/imperva"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/21Bruce/resolved-server/api"
+	"github.com/21Bruce/resolved-server/config"
+	"github.com/21Bruce/resolved-server/store"
 )
 
 /*
@@ -87,7 +90,7 @@ func (a *API) SetCookies(cookies []*http.Cookie, userAgent string) {
 		a.UserAgent = userAgent
 	} else {
 		// Default user agent if none provided
-		a.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+		a.UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	}
 }
 
@@ -190,11 +193,32 @@ func (a *API) extractCookiesFromResponse(resp *http.Response) {
 }
 
 /*
+Name: isImpervaChallenge
+Type: Internal Func
+Purpose: Check if an HTTP response is an Imperva challenge
+*/
+func isImpervaChallenge(resp *http.Response) bool {
+	// Imperva can return 500, 403, or 503
+	if resp.StatusCode != 500 && resp.StatusCode != 403 && resp.StatusCode != 503 {
+		return false
+	}
+	// Check for Imperva headers
+	if resp.Header.Get("X-Cdn") == "Imperva" {
+		return true
+	}
+	// Sometimes nginx is used as a proxy
+	if resp.Header.Get("Server") == "nginx" && resp.StatusCode == 500 {
+		return true
+	}
+	return false
+}
+
+/*
 Name: doRequestWithRetry
 Type: Internal Func
 Purpose: Execute HTTP request with automatic retry on Imperva challenge
 Note: For POST requests, the bodyBytes should be provided to recreate the request on retry
-If venueID is provided (non-zero), will attempt to fetch fresh Imperva cookies via headless browser as fallback
+Returns api.ErrImperva if all retries fail due to Imperva challenge
 */
 func (a *API) doRequestWithRetry(client *http.Client, req *http.Request, bodyBytes []byte, maxRetries int, venueID int64) (*http.Response, error) {
 	// Store original headers for retry
@@ -204,6 +228,8 @@ func (a *API) doRequestWithRetry(client *http.Client, req *http.Request, bodyByt
 	}
 	originalURL := req.URL.String()
 	originalMethod := req.Method
+
+	var lastImpervaResponse bool
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// On retry, recreate the request with the body
@@ -238,9 +264,10 @@ func (a *API) doRequestWithRetry(client *http.Client, req *http.Request, bodyByt
 			return nil, err
 		}
 
-		// Check if this is an Imperva challenge (500 with X-Cdn: Imperva)
-		if resp.StatusCode == 500 && (resp.Header.Get("X-Cdn") == "Imperva" || resp.Header.Get("Server") == "nginx") {
-			fmt.Println("Received Imperva challenge (500), extracting cookies and retrying...")
+		// Check if this is an Imperva challenge
+		if isImpervaChallenge(resp) {
+			fmt.Printf("Received Imperva challenge (status %d), extracting cookies and retrying...\n", resp.StatusCode)
+			lastImpervaResponse = true
 
 			// Extract cookies from response
 			a.extractCookiesFromResponse(resp)
@@ -250,79 +277,37 @@ func (a *API) doRequestWithRetry(client *http.Client, req *http.Request, bodyByt
 				resp.Body.Close()
 				continue
 			} else {
-				// Retries exhausted - try Imperva cookie fallback if venueID is available
-				if venueID > 0 {
-					fmt.Println("Retries exhausted, attempting Imperva cookie fallback via headless browser...")
-					resp.Body.Close()
-
-					// Fetch fresh cookies via headless browser
-					cookieData, err := imperva.FetchCookiesForAPI(venueID)
-					if err != nil {
-						fmt.Printf("Failed to fetch Imperva cookies via headless browser: %v\n", err)
-						// Make one more request attempt to get a fresh response to return
-						var fallbackReq *http.Request
-						if bodyBytes != nil {
-							fallbackReq, _ = http.NewRequest(originalMethod, originalURL, bytes.NewBuffer(bodyBytes))
-						} else {
-							fallbackReq, _ = http.NewRequest(originalMethod, originalURL, nil)
-						}
-						for key, values := range originalHeaders {
-							for _, value := range values {
-								fallbackReq.Header.Add(key, value)
-							}
-						}
-						a.addCookiesToRequest(fallbackReq)
-						resp, err = client.Do(fallbackReq)
-						if err != nil {
-							return nil, err
-						}
-						return resp, nil
-					}
-
-					// Update API client with fresh cookies and user agent
-					a.SetCookies(cookieData.Cookies, cookieData.UserAgent)
-					fmt.Printf("Fetched %d fresh Imperva cookies via headless browser, retrying request...\n", len(cookieData.Cookies))
-
-					// Retry one more time with fresh cookies
-					var fallbackReq *http.Request
-					if bodyBytes != nil {
-						fallbackReq, err = http.NewRequest(originalMethod, originalURL, bytes.NewBuffer(bodyBytes))
-					} else {
-						fallbackReq, err = http.NewRequest(originalMethod, originalURL, nil)
-					}
-					if err != nil {
-						return nil, fmt.Errorf("failed to recreate request: %w", err)
-					}
-					for key, values := range originalHeaders {
-						for _, value := range values {
-							fallbackReq.Header.Add(key, value)
-						}
-					}
-					a.addCookiesToRequest(fallbackReq)
-					time.Sleep(1 * time.Second)
-
-					resp, err = client.Do(fallbackReq)
-					if err != nil {
-						return nil, err
-					}
-
-					// Check if the retry with fresh cookies succeeded
-					if resp.StatusCode == 500 && (resp.Header.Get("X-Cdn") == "Imperva" || resp.Header.Get("Server") == "nginx") {
-						fmt.Println("Still receiving Imperva challenge after cookie fallback, returning error response")
-						return resp, nil
-					}
-
-					return resp, nil
-				}
-
-				return resp, nil // Return the error response if retries exhausted
+				// Retries exhausted - return ErrImperva
+				resp.Body.Close()
+				fmt.Println("Retries exhausted, Imperva challenge not resolved. Please refresh cookies via /admin/cookies/import")
+				return nil, api.ErrImperva
 			}
 		}
 
+		lastImpervaResponse = false
 		return resp, nil
 	}
 
+	if lastImpervaResponse {
+		return nil, api.ErrImperva
+	}
 	return nil, fmt.Errorf("max retries exceeded")
+}
+
+/*
+Name: LoadCookiesFromStore
+Type: API Func
+Purpose: Load cookies from Redis store for a venue
+*/
+func (a *API) LoadCookiesFromStore(venueID int64) error {
+	ctx := context.Background()
+	cookieData, err := store.GetCookies(ctx, venueID)
+	if err != nil {
+		return err
+	}
+	a.SetCookies(cookieData.Cookies, cookieData.UserAgent)
+	fmt.Printf("Loaded %d cookies from store for venue %d\n", len(cookieData.Cookies), venueID)
+	return nil
 }
 
 /*
@@ -333,7 +318,7 @@ working API struct
 */
 func GetDefaultAPI() API {
 	return API{
-		APIKey: "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5",
+		APIKey: config.Get().ResyAPIKey,
 	}
 }
 
@@ -548,11 +533,27 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 	fmt.Println("Starting Reserve function")
 	defer fmt.Println("Exiting Reserve function")
 
+	// Try to load cookies from Redis store for this venue
+	if err := a.LoadCookiesFromStore(params.VenueID); err != nil {
+		fmt.Printf("Warning: Could not load cookies from store for venue %d: %v\n", params.VenueID, err)
+		// Continue anyway - cookies might have been set manually or we'll get Imperva error
+	}
+
 	// Converting fields to URL query format
+	// IMPORTANT: Convert to NYC timezone before extracting date components
+	// The reservation time is stored in UTC, but Resy expects the date in NYC timezone
 	fmt.Println("Converting reservation times to date string")
-	year := strconv.Itoa(params.ReservationTimes[0].Year())
-	monthInt := int(params.ReservationTimes[0].Month())
-	dayInt := params.ReservationTimes[0].Day()
+	nycLocation, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		fmt.Printf("Error loading NYC timezone: %v, using UTC\n", err)
+		nycLocation = time.UTC
+	}
+	reservationTimeNYC := params.ReservationTimes[0].In(nycLocation)
+	fmt.Printf("Reservation time in NYC: %s\n", reservationTimeNYC.Format("2006-01-02 15:04:05 MST"))
+
+	year := strconv.Itoa(reservationTimeNYC.Year())
+	monthInt := int(reservationTimeNYC.Month())
+	dayInt := reservationTimeNYC.Day()
 
 	// Zero-pad month and day
 	month := fmt.Sprintf("%02d", monthInt)
@@ -562,14 +563,19 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 	fmt.Printf("Formatted date: %s\n", date)
 	fmt.Printf("Using venue_id: %d\n", params.VenueID)
 
-	// Try POST method (browser uses POST, and GET with long token in URL may be blocked by Imperva WAF)
-	// Build form-encoded body without auth token in URL (token only in headers)
-	// Removed lat/long as they may not be required or might cause issues with 0 values
-	bodyStr := fmt.Sprintf("day=%s&venue_id=%d&party_size=%d",
-		url.QueryEscape(date),
-		params.VenueID,
-		params.PartySize)
-	bodyBytes := []byte(bodyStr)
+	// Use JSON body for find request (Resy API expects application/json)
+	requestBody := map[string]interface{}{
+		"day":        date,
+		"venue_id":   params.VenueID,
+		"party_size": params.PartySize,
+		"lat":        0,
+		"long":       0,
+	}
+	bodyBytes, err := json.Marshal(requestBody)
+	if err != nil {
+		fmt.Printf("Error marshaling find request body: %v\n", err)
+		return nil, err
+	}
 	fmt.Printf("Find request body: %s\n", string(bodyBytes))
 
 	findUrl := "https://api.resy.com/4/find"
@@ -583,7 +589,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 	// Setting headers - Important: User-Agent needed to bypass Imperva WAF
 	fmt.Println("Setting headers for find request")
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", `ResyAPI api_key="`+a.APIKey+`"`)
 	request.Header.Set("X-Resy-Auth-Token", params.LoginResp.AuthToken)
 	request.Header.Set("X-Resy-Universal-Auth-Token", params.LoginResp.AuthToken)
@@ -595,7 +601,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 	// Fallback to default User-Agent if not set via cookies
 	if a.UserAgent == "" {
-		request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+		request.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	}
 
 	// POST Variations (uncomment to try if GET fails):
@@ -678,6 +684,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 		fmt.Printf("Error details: %s\n", string(responseBody))
 
 		// Enhanced error parsing: Try to extract detailed error information
+		errorMsg := string(responseBody)
 		var errorMap map[string]interface{}
 		if json.Unmarshal(responseBody, &errorMap) == nil {
 			fmt.Println("=== PARSED ERROR DETAILS ===")
@@ -688,6 +695,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 			if message, ok := errorMap["message"].(string); ok {
 				fmt.Printf("API error message: %s\n", message)
+				errorMsg = message
 			}
 			if errorType, ok := errorMap["type"].(string); ok {
 				fmt.Printf("API error type: %s\n", errorType)
@@ -700,7 +708,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 			fmt.Printf("Response is not JSON, raw content: %s\n", string(responseBody))
 		}
 
-		return nil, api.ErrNetwork
+		return nil, api.NewNetworkError("find", response.StatusCode, errorMsg)
 	}
 
 	var jsonTopLevelMap map[string]interface{}
@@ -715,13 +723,13 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 	jsonResultsMap, ok := jsonTopLevelMap["results"].(map[string]interface{})
 	if !ok {
 		fmt.Println("Error: 'results' key not found or invalid in JSON response")
-		return nil, api.ErrNetwork
+		return nil, api.NewNetworkError("find", 0, "invalid response: 'results' key not found")
 	}
 
 	jsonVenuesList, ok := jsonResultsMap["venues"].([]interface{})
 	if !ok {
 		fmt.Println("Error: 'venues' key not found or invalid in JSON response")
-		return nil, api.ErrNetwork
+		return nil, api.NewNetworkError("find", 0, "invalid response: 'venues' key not found")
 	}
 
 	if len(jsonVenuesList) == 0 {
@@ -732,13 +740,13 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 	jsonVenueMap, ok := jsonVenuesList[0].(map[string]interface{})
 	if !ok {
 		fmt.Println("Error: Invalid venue structure in JSON response")
-		return nil, api.ErrNetwork
+		return nil, api.NewNetworkError("find", 0, "invalid response: venue structure is invalid")
 	}
 
 	jsonSlotsList, ok := jsonVenueMap["slots"].([]interface{})
 	if !ok {
 		fmt.Println("Error: 'slots' key not found or invalid in venue JSON")
-		return nil, api.ErrNetwork
+		return nil, api.NewNetworkError("find", 0, "invalid response: 'slots' key not found in venue")
 	}
 
 	fmt.Printf("Number of slots available: %d\n", len(jsonSlotsList))
@@ -805,45 +813,34 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 					continue
 				}
 
-				hourFieldInt, err := strconv.Atoi(timeFields[0])
-				if err != nil {
-					fmt.Printf("Error parsing hour in slot %d: %v\n", j, err)
-					continue
-				}
-
-				minFieldInt, err := strconv.Atoi(timeFields[1])
-				if err != nil {
-					fmt.Printf("Error parsing minute in slot %d: %v\n", j, err)
-					continue
-				}
-
 				// Parse the slot's full date/time
-				// Note: The API returns times, but we need to compare with currentTime which is in UTC
-				// We'll parse the slot time and assume it's in UTC, or construct it from the date components
+				// NOTE: Resy API returns times in the venue's local timezone (NYC), not UTC
+				// We need to parse it as NYC time and compare with the requested time in NYC
 				dateTimeStr := dateStr + " " + timeFields[0] + ":" + timeFields[1] + ":00"
-				slotTime, err := time.Parse("2006-01-02 15:04:05", dateTimeStr)
+				slotTime, err := time.ParseInLocation("2006-01-02 15:04:05", dateTimeStr, nycLocation)
 				if err != nil {
 					fmt.Printf("Error parsing slot time: %v\n", err)
 					continue
 				}
-				// Convert to UTC to match currentTime timezone
-				slotTime = time.Date(slotTime.Year(), slotTime.Month(), slotTime.Day(),
-					slotTime.Hour(), slotTime.Minute(), slotTime.Second(), 0, time.UTC)
+				fmt.Printf("Parsed slot time (NYC): %s\n", slotTime.Format("2006-01-02 15:04:05 MST"))
 
-				// Check if the slot is on the same date as the requested time
+				// Convert currentTime to NYC for comparison
+				currentTimeNYC := currentTime.In(nycLocation)
+
+				// Check if the slot is on the same date as the requested time (in NYC timezone)
 				slotDateStr := slotTime.Format("2006-01-02")
-				currentDateStr := currentTime.Format("2006-01-02")
-				if slotTime.Year() != currentTime.Year() ||
-					slotTime.Month() != currentTime.Month() ||
-					slotTime.Day() != currentTime.Day() {
+				currentDateStr := currentTimeNYC.Format("2006-01-02")
+				if slotTime.Year() != currentTimeNYC.Year() ||
+					slotTime.Month() != currentTimeNYC.Month() ||
+					slotTime.Day() != currentTimeNYC.Day() {
 					fmt.Printf("Slot %d date %s doesn't match requested date %s, skipping\n",
 						j, slotDateStr, currentDateStr)
 					continue
 				}
 				fmt.Printf("Slot %d date matches: %s\n", j, slotDateStr)
 
-				// Check if the slot matches the desired time (exact match)
-				timeMatches := hourFieldInt == currentTime.Hour() && minFieldInt == currentTime.Minute()
+				// Check if the slot matches the desired time (exact match) using NYC times
+				timeMatches := slotTime.Hour() == currentTimeNYC.Hour() && slotTime.Minute() == currentTimeNYC.Minute()
 
 				// Get config map to check table type
 				jsonConfigMap, ok := jsonSlotMap["config"].(map[string]interface{})
@@ -874,7 +871,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 				// If exact time match, use it immediately
 				if timeMatches {
-					fmt.Printf("Found exact match at slot %d for time %s\n", j, currentTime.Format("15:04"))
+					fmt.Printf("Found exact match at slot %d for time %s\n", j, currentTimeNYC.Format("15:04"))
 					bestSlot = jsonSlotMap
 					bestSlotIndex = j
 					bestSlotTime = slotTime
@@ -887,8 +884,9 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 				}
 
 				// If no exact match yet, track the closest slot within the time window
+				// Compare using NYC times since slots are in NYC timezone
 				if !foundExactMatch {
-					timeDiff := slotTime.Sub(currentTime)
+					timeDiff := slotTime.Sub(currentTimeNYC)
 					absTimeDiff := timeDiff
 					if absTimeDiff < 0 {
 						absTimeDiff = -absTimeDiff // Use absolute value
@@ -913,15 +911,16 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 			// Summary of slot search
 			fmt.Printf("Slot search complete. Found %d slots total.\n", len(jsonSlotsList))
+			currentTimeNYC := currentTime.In(nycLocation)
 			if bestSlotIndex >= 0 {
 				if foundExactMatch {
-					fmt.Printf("✓ Using exact match at slot %d for time %s\n", bestSlotIndex, currentTime.Format("15:04"))
+					fmt.Printf("✓ Using exact match at slot %d for time %s NYC\n", bestSlotIndex, currentTimeNYC.Format("15:04"))
 				} else {
-					fmt.Printf("✓ No exact match found. Using closest available slot at %s (requested: %s, difference: %v)\n",
-						bestSlotTime.Format("15:04"), currentTime.Format("15:04"), bestTimeDiff)
+					fmt.Printf("✓ No exact match found. Using closest available slot at %s (requested: %s NYC, difference: %v)\n",
+						bestSlotTime.Format("15:04"), currentTimeNYC.Format("15:04"), bestTimeDiff)
 				}
 			} else {
-				fmt.Printf("✗ No suitable slot found within %v of requested time %s\n", maxTimeDiff, currentTime.Format("15:04"))
+				fmt.Printf("✗ No suitable slot found within %v of requested time %s NYC\n", maxTimeDiff, currentTimeNYC.Format("15:04"))
 			}
 
 			// If we found a slot (exact or closest), proceed with booking
@@ -975,7 +974,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 				// Fallback to default User-Agent if not set via cookies
 				if a.UserAgent == "" {
-					requestDetail.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+					requestDetail.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 				}
 				// Log the request headers
 				fmt.Println("Request Headers:")
@@ -1000,7 +999,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 					}
 					fmt.Printf("Detail response body: %s\n", string(responseDetailBody))
 					fmt.Printf("Detail request failed with status code: %d\n", responseDetail.StatusCode)
-					return nil, api.ErrNetwork
+					return nil, api.NewNetworkError("detail", responseDetail.StatusCode, string(responseDetailBody))
 				}
 
 				defer responseDetail.Body.Close()
@@ -1063,7 +1062,7 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 
 				// Fallback to default User-Agent if not set via cookies
 				if a.UserAgent == "" {
-					requestBook.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+					requestBook.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 				}
 
 				fmt.Println("Sending book request")

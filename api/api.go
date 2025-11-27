@@ -6,6 +6,7 @@ package api
 
 import (
     "errors"
+    "fmt"
     "strconv"
     "time"
 )
@@ -18,7 +19,31 @@ var (
     ErrTimeNull = errors.New("times list empty")
     ErrNoOffer = errors.New("table is not offered on given date")
     ErrNoPayInfo = errors.New("no payment info on account")
+    ErrImperva = errors.New("imperva challenge detected: cookies expired or invalid")
 )
+
+// NetworkError wraps ErrNetwork with additional context about what failed
+type NetworkError struct {
+    Step    string // e.g., "find", "detail", "book"
+    Status  int    // HTTP status code if available
+    Message string // Additional context
+}
+
+func (e *NetworkError) Error() string {
+    if e.Status > 0 {
+        return fmt.Sprintf("network error at %s step (HTTP %d): %s", e.Step, e.Status, e.Message)
+    }
+    return fmt.Sprintf("network error at %s step: %s", e.Step, e.Message)
+}
+
+func (e *NetworkError) Unwrap() error {
+    return ErrNetwork
+}
+
+// NewNetworkError creates a new NetworkError with context
+func NewNetworkError(step string, status int, message string) *NetworkError {
+    return &NetworkError{Step: step, Status: status, Message: message}
+}
 
 
 /*

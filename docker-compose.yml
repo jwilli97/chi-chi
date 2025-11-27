@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  resy-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    # Chrome needs shared memory for stability
+    shm_size: '256mb'
+    environment:
+      - REDIS_URL=redis:6379
+      - REDIS_PASSWORD=
+      - PORT=8090
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-changeme}
+      - RESY_API_KEY=${RESY_API_KEY:-VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5}
+      # Cookie refresh settings (headless browser automation)
+      - COOKIE_REFRESH_ENABLED=${COOKIE_REFRESH_ENABLED:-true}
+      - COOKIE_REFRESH_INTERVAL=${COOKIE_REFRESH_INTERVAL:-6h}
+      # Optional: Set these for persistent sessions across restarts
+      # - COOKIE_SECRET_KEY=<64-char-hex-string>
+      # - COOKIE_BLOCK_KEY=<64-char-hex-string>
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+
+
+

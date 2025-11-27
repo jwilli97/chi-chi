@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,42 +19,65 @@ type CookieData struct {
 	UserAgent string
 }
 
+// DefaultUserAgent is used for browser automation
+const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 // FetchCookies uses a headless browser to navigate to a Resy venue page and fetch Imperva cookies
 // Returns the cookies and user-agent that can be used for subsequent API requests
 func FetchCookies(venueID int64) (*CookieData, error) {
+	return FetchCookiesWithRetry(venueID, 3)
+}
+
+// FetchCookiesWithRetry attempts to fetch cookies with retry logic for transient failures
+func FetchCookiesWithRetry(venueID int64, maxRetries int) (*CookieData, error) {
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("Cookie fetch attempt %d/%d for venue %d", attempt+1, maxRetries, venueID)
+			time.Sleep(time.Duration(attempt*2) * time.Second) // Exponential backoff
+		}
+
+		cookieData, err := fetchCookiesOnce(venueID)
+		if err == nil {
+			return cookieData, nil
+		}
+
+		lastErr = err
+		log.Printf("Cookie fetch attempt %d failed for venue %d: %v", attempt+1, venueID, err)
+	}
+
+	return nil, fmt.Errorf("failed to fetch cookies after %d attempts: %w", maxRetries, lastErr)
+}
+
+// fetchCookiesOnce performs a single attempt to fetch cookies
+func fetchCookiesOnce(venueID int64) (*CookieData, error) {
 	// Build the venue URL
 	venueURL := fmt.Sprintf("https://resy.com/cities/nyc/venues/%d", venueID)
 
-	// Create context with timeout
+	// Create context with timeout - 60s for headless operation
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Create chrome instance options
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-	)
+	// Build chrome options for headless operation
+	opts := buildChromeOptions()
 
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
-	defer cancel()
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
+	defer allocCancel()
 
-	// Create chrome instance
-	ctx, cancel = chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
-	defer cancel()
+	// Create chrome instance with error logging
+	chromeCtx, chromeCancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(log.Printf))
+	defer chromeCancel()
 
 	var cookies []*http.Cookie
 	var userAgent string
 
 	// Navigate to the venue page and wait for Imperva challenge to complete
-	err := chromedp.Run(ctx,
+	err := chromedp.Run(chromeCtx,
 		chromedp.Navigate(venueURL),
 		// Wait for page to load and Imperva challenge to complete
-		// We wait for either the page to fully load or a timeout
 		chromedp.Sleep(5*time.Second), // Initial wait for Imperva challenge
-		// Check if page loaded successfully by waiting for body or specific element
+		// Check if page loaded successfully by waiting for body
 		chromedp.WaitVisible("body", chromedp.ByQuery),
 		// Additional wait to ensure Imperva cookies are set
 		chromedp.Sleep(3*time.Second),
@@ -65,7 +89,6 @@ func FetchCookies(venueID int64) (*CookieData, error) {
 			}
 
 			// Convert network cookies to http.Cookie
-			// Include all cookies - Imperva cookies might be on various domains
 			for _, c := range cookiesRaw {
 				cookie := &http.Cookie{
 					Name:     c.Name,
@@ -86,8 +109,7 @@ func FetchCookies(venueID int64) (*CookieData, error) {
 			var ua string
 			err = chromedp.Evaluate(`navigator.userAgent`, &ua).Do(ctx)
 			if err != nil {
-				// Fallback to default if we can't get it
-				ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+				ua = DefaultUserAgent
 			}
 			userAgent = ua
 
@@ -99,7 +121,54 @@ func FetchCookies(venueID int64) (*CookieData, error) {
 		return nil, fmt.Errorf("failed to fetch cookies: %w", err)
 	}
 
-	// Filter for Imperva cookies (typically start with _incap_ or _visid_)
+	// Filter for Imperva cookies
+	impervaCookies := filterImpervaCookies(cookies)
+
+	// If no Imperva-specific cookies found, return all cookies
+	if len(impervaCookies) == 0 {
+		impervaCookies = cookies
+	}
+
+	log.Printf("Fetched %d cookies for venue %d", len(impervaCookies), venueID)
+
+	return &CookieData{
+		Cookies:   impervaCookies,
+		UserAgent: userAgent,
+	}, nil
+}
+
+// buildChromeOptions constructs Chrome options for headless operation
+func buildChromeOptions() []chromedp.ExecAllocatorOption {
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-setuid-sandbox", true),
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("disable-translate", true),
+		chromedp.Flag("metrics-recording-only", true),
+		chromedp.Flag("mute-audio", true),
+		chromedp.Flag("safebrowsing-disable-auto-update", true),
+		chromedp.UserAgent(DefaultUserAgent),
+		chromedp.WindowSize(1920, 1080),
+	}
+
+	// Use CHROME_PATH environment variable if set (for containerized environments)
+	if chromePath := os.Getenv("CHROME_PATH"); chromePath != "" {
+		opts = append(opts, chromedp.ExecPath(chromePath))
+	}
+
+	return opts
+}
+
+// filterImpervaCookies extracts Imperva-related cookies from a list
+func filterImpervaCookies(cookies []*http.Cookie) []*http.Cookie {
 	var impervaCookies []*http.Cookie
 	for _, cookie := range cookies {
 		if strings.HasPrefix(cookie.Name, "_incap_") ||
@@ -107,22 +176,12 @@ func FetchCookies(venueID int64) (*CookieData, error) {
 			strings.HasPrefix(cookie.Name, "_visid_") ||
 			strings.HasPrefix(cookie.Name, "visid_incap_") ||
 			strings.HasPrefix(cookie.Name, "nlbi_") ||
-			strings.Contains(cookie.Name, "imperva") {
+			strings.Contains(cookie.Name, "imperva") ||
+			strings.HasPrefix(cookie.Name, "reese84") {
 			impervaCookies = append(impervaCookies, cookie)
 		}
 	}
-
-	// If no Imperva-specific cookies found, return all cookies
-	if len(impervaCookies) == 0 {
-		impervaCookies = cookies
-	}
-
-	log.Printf("Fetched %d cookies for venue %d, user-agent: %s", len(impervaCookies), venueID, userAgent)
-
-	return &CookieData{
-		Cookies:   impervaCookies,
-		UserAgent: userAgent,
-	}, nil
+	return impervaCookies
 }
 
 // FetchCookiesForAPI is a convenience function that fetches cookies for api.resy.com domain
