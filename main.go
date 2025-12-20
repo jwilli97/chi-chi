@@ -52,7 +52,7 @@ type LoginResponse struct {
 
 type ReserveRequest struct {
 	VenueID          int64    `json:"venue_id"`
-	ReservationTime  string   `json:"reservation_time"`  // datetime-local format in NYC time: YYYY-MM-DDTHH:MM
+	ReservationTime  string   `json:"reservation_time"` // datetime-local format in NYC time: YYYY-MM-DDTHH:MM
 	PartySize        int      `json:"party_size"`
 	TablePreferences []string `json:"table_preferences"`
 	IsImmediate      bool     `json:"is_immediate"`
@@ -76,10 +76,10 @@ type SelectVenueResponse struct {
 
 // Admin request/response types
 type CookieImportRequest struct {
-	VenueID   int64             `json:"venue_id"`
-	Cookies   []CookieData      `json:"cookies"`
-	UserAgent string            `json:"user_agent"`
-	TTLHours  int               `json:"ttl_hours"` // Optional, defaults to 24
+	VenueID   int64        `json:"venue_id"`
+	Cookies   []CookieData `json:"cookies"`
+	UserAgent string       `json:"user_agent"`
+	TTLHours  int          `json:"ttl_hours"` // Optional, defaults to 24
 }
 
 type CookieData struct {
@@ -390,17 +390,6 @@ func main() {
 			return
 		}
 
-		venueIDStr, err := getCookieValue(r, "venue_id")
-		if err != nil {
-			sendJSONResponse(w, LoginResponse{Error: "Venue ID not found. Please select a restaurant first."}, http.StatusBadRequest)
-			return
-		}
-		venueID, err := strconv.ParseInt(venueIDStr, 10, 64)
-		if err != nil {
-			sendJSONResponse(w, LoginResponse{Error: "Invalid Venue ID"}, http.StatusBadRequest)
-			return
-		}
-
 		loginParam := api.LoginParam{
 			Email:    loginReq.Email,
 			Password: loginReq.Password,
@@ -425,7 +414,6 @@ func main() {
 
 		value := map[string]string{
 			"auth_token":        loginResp.AuthToken,
-			"venue_id":          strconv.FormatInt(venueID, 10),
 			"payment_method_id": strconv.FormatInt(loginResp.PaymentMethodID, 10),
 		}
 		encoded, err := s.Encode("session", value)
@@ -445,7 +433,6 @@ func main() {
 
 		sendJSONResponse(w, LoginResponse{
 			AuthToken: loginResp.AuthToken,
-			VenueID:   venueID,
 		}, http.StatusOK)
 	})
 
@@ -534,7 +521,7 @@ func main() {
 			reserveResp, err := appCtx.API.Reserve(reserveParam)
 			if err != nil {
 				appendLog("Immediate reservation failed: " + err.Error())
-				
+
 				// Check for specific error types using errors.Is/As
 				var netErr *api.NetworkError
 				if errors.As(err, &netErr) {

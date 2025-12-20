@@ -32,6 +32,18 @@ services:
       retries: 3
       start_period: 30s
 
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://resy-bot:8090
+    depends_on:
+      - resy-bot
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     ports:
@@ -49,6 +61,3 @@ services:
 
 volumes:
   redis_data:
-
-
-
