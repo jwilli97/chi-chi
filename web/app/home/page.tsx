@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
 const RESTAURANTS = [
-  { venue_id: 89607, name: "Crevette" },
+  { venue_id: 86907, name: "Crevette" },
   { venue_id: 53251, name: "Opera House" },
   { venue_id: 70599, name: "Forgione" },
 ];

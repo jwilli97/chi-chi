@@ -737,10 +737,40 @@ func (a *API) Reserve(params api.ReserveParam) (*api.ReserveResponse, error) {
 		return nil, api.ErrNoOffer
 	}
 
-	jsonVenueMap, ok := jsonVenuesList[0].(map[string]interface{})
-	if !ok {
-		fmt.Println("Error: Invalid venue structure in JSON response")
-		return nil, api.NewNetworkError("find", 0, "invalid response: venue structure is invalid")
+	// Find the venue that matches the requested venue ID
+	var jsonVenueMap map[string]interface{}
+	for i, v := range jsonVenuesList {
+		venue, ok := v.(map[string]interface{})
+		if !ok {
+			fmt.Printf("Skipping invalid venue structure at index %d\n", i)
+			continue
+		}
+
+		// Try to extract venue ID from the response structure
+		// Resy API returns venue info nested under "venue" key
+		if venueInfo, ok := venue["venue"].(map[string]interface{}); ok {
+			if idInfo, ok := venueInfo["id"].(map[string]interface{}); ok {
+				if resyID, ok := idInfo["resy"].(float64); ok {
+					fmt.Printf("Found venue at index %d with ID %d\n", i, int64(resyID))
+					if int64(resyID) == params.VenueID {
+						fmt.Printf("Matched requested venue ID %d\n", params.VenueID)
+						jsonVenueMap = venue
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// If no matching venue found, log warning and fall back to first venue
+	if jsonVenueMap == nil {
+		fmt.Printf("Warning: Could not find venue matching ID %d in response, using first venue\n", params.VenueID)
+		var ok bool
+		jsonVenueMap, ok = jsonVenuesList[0].(map[string]interface{})
+		if !ok {
+			fmt.Println("Error: Invalid venue structure in JSON response")
+			return nil, api.NewNetworkError("find", 0, "invalid response: venue structure is invalid")
+		}
 	}
 
 	jsonSlotsList, ok := jsonVenueMap["slots"].([]interface{})
