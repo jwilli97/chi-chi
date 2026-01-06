@@ -117,8 +117,22 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white relative overflow-hidden">
-      {/* Corner brackets */}
+    <>
+      <style>{`
+        input[type="date"]::-webkit-calendar-picker-indicator,
+        input[type="time"]::-webkit-calendar-picker-indicator {
+          filter: invert(1);
+          cursor: pointer;
+        }
+        
+        input[type="date"]::-moz-calendar-picker-indicator,
+        input[type="time"]::-moz-calendar-picker-indicator {
+          filter: invert(1);
+          cursor: pointer;
+        }
+      `}</style>
+      <div className="min-h-screen bg-black text-white relative overflow-hidden">
+        {/* Corner brackets */}
       <div className="absolute top-8 left-8 w-16 h-16 border-l-2 border-t-2 border-amber-400" />
       <div className="absolute top-8 right-8 w-16 h-16 border-r-2 border-t-2 border-amber-400" />
       <div className="absolute bottom-8 left-8 w-16 h-16 border-l-2 border-b-2 border-amber-400" />
@@ -136,7 +150,7 @@ export default function Home() {
         <Card className="bg-zinc-900/50 border-zinc-800">
           <CardHeader>
             <CardTitle className="text-amber-400 text-2xl font-light tracking-wider text-center">
-              RESERVE NOW
+              BOOK RESERVATION
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -202,7 +216,7 @@ export default function Home() {
             </div>
 
             {/* Table Preferences */}
-            <div className="space-y-2">
+            {/* <div className="space-y-2">
               <Label className="text-zinc-400 text-sm">Table Preferences (Optional)</Label>
               <div className="flex flex-wrap gap-2">
                 {TABLE_TYPES.map((type) => (
@@ -219,7 +233,7 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-            </div>
+            </div> */}
 
             {/* Timing Toggle */}
             <div className="space-y-4">
@@ -280,7 +294,7 @@ export default function Home() {
               disabled={isReserving || !selectedVenueId}
               className="w-full py-6 text-lg bg-amber-400 text-black hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isReserving ? "RESERVING..." : isImmediate ? "RESERVE NOW" : "SCHEDULE RESERVATION"}
+              {isReserving ? "RESERVING..." : isImmediate ? "RESERVE" : "SCHEDULE RESERVATION"}
             </Button>
 
             {!selectedVenueId && (
@@ -290,29 +304,8 @@ export default function Home() {
             )}
           </CardContent>
         </Card>
-
-        {/* Activity Log */}
-        <Card className="bg-zinc-900/50 border-zinc-800 mt-6">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-amber-400 text-lg font-light tracking-wider">
-              ACTIVITY
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 max-h-32 overflow-y-auto text-xs font-mono">
-              {logs.length === 0 ? (
-                <p className="text-zinc-500">No recent activity</p>
-              ) : (
-                logs.map((log, i) => (
-                  <p key={i} className="text-zinc-400 wrap-break-word">
-                    {log}
-                  </p>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
       </div>
     </div>
+    </>
   );
 }
